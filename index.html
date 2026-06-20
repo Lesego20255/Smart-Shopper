@@ -778,40 +778,42 @@ const PRODUCT_IMAGES = {
   'rama':'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyMDAgMjIwIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIyMCIgZmlsbD0iIzBGMUEwNSIgcng9IjQiLz48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjUyIiBmaWxsPSIjNTU4QjJGIiByeD0iNCIvPjx0ZXh0IHg9IjEwMCIgeT0iMzIiIGZvbnQtZmFtaWx5PSJBcmlhbCBCbGFjayxzYW5zLXNlcmlmIiBmb250LXNpemU9IjE2IiBmb250LXdlaWdodD0iOTAwIiBmaWxsPSJ3aGl0ZSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+UkFNQTwvdGV4dD48dGV4dCB4PSIxMDAiIHk9IjExMyIgZm9udC1zaXplPSI0NCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZG9taW5hbnQtYmFzZWxpbmU9Im1pZGRsZSI+8J+niDwvdGV4dD48dGV4dCB4PSIxMDAiIHk9IjE1OCIgZm9udC1mYW1pbHk9IkFyaWFsLHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZvbnQtd2VpZ2h0PSI3MDAiIGZpbGw9IiNlZWUiIHRleHQtYW5jaG9yPSJtaWRkbGUiPk1hcmdhcmluZTwvdGV4dD48L3N2Zz4=',
 };
 
-/* ── OPEN FOOD FACTS API ── */
-const OFF_BASE = 'https://world.openfoodfacts.org/cgi/search.pl';
-const CORS_PROXIES = [
-  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-  u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-];
+/* ── OPEN FOOD FACTS API (via Vercel serverless proxy) ── */
+// Calls /api/image which runs server-side — no CORS issues at all.
 let apiTested = false;
 function setApiStatus(s){
   const c = document.getElementById('api-status');
   if(!c) return;
-  const labels = {fetching:'Loading images…',active:'Open Food Facts ✓',failed:'Images offline'};
+  const labels = {fetching:'Loading images…', active:'Open Food Facts ✓', failed:'Images offline'};
   c.className = 'api-chip ' + s;
   c.innerHTML = `<span class="api-dot ${s==='fetching'?'pulse':''}"></span>${labels[s]||s}`;
 }
 async function fetchLiveImage(name, brand, pid){
   const key = (name||'').toLowerCase().trim();
   if(imgCache[key] !== undefined) return;
-  imgCache[key] = null;
-  const q = encodeURIComponent((brand&&brand.length>2?brand:name).toLowerCase());
-  const url = `${OFF_BASE}?search_terms=${q}&search_simple=1&action=process&json=1&page_size=5&fields=product_name,image_front_url`;
-  for(const proxy of CORS_PROXIES){
-    try{
-      const r = await fetch(proxy(url), {signal:AbortSignal.timeout(7000)});
-      if(!r.ok) continue;
-      const d = await r.json();
-      const prods = (d.products||[]).filter(p=>p.image_front_url);
-      if(prods.length){
-        imgCache[key] = prods[0].image_front_url;
-        if(!apiTested){apiTested=true;setApiStatus('active');}
-        saveDB(); updateProductImage(pid, prods[0].image_front_url); return;
-      }
-    }catch(e){}
+  imgCache[key] = null; // mark as attempted so we don't retry
+
+  const query = (brand && brand.length > 2 ? brand + ' ' + name : name).toLowerCase();
+
+  try{
+    // /api/image is our Vercel serverless function — it calls OFF server-side
+    const r = await fetch(`/api/image?query=${encodeURIComponent(query)}`, {
+      signal: AbortSignal.timeout(10000)
+    });
+    if(!r.ok) throw new Error('API error ' + r.status);
+    const data = await r.json();
+    const products = data.products || [];
+    if(products.length && products[0].image){
+      imgCache[key] = products[0].image;
+      if(!apiTested){ apiTested = true; setApiStatus('active'); }
+      saveDB();
+      updateProductImage(pid, products[0].image);
+      return;
+    }
+  } catch(e){
+    console.warn('Smart Shopper image fetch failed:', e.message);
   }
-  if(!apiTested){apiTested=true;setApiStatus('failed');}
+  if(!apiTested){ apiTested = true; setApiStatus('failed'); }
 }
 function updateProductImage(pid, url){
   document.querySelectorAll(`[data-pid="${pid}"]`).forEach(el=>{
